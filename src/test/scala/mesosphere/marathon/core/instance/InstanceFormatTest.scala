@@ -2,7 +2,7 @@ package mesosphere.marathon
 package core.instance
 
 import mesosphere.UnitTest
-import mesosphere.marathon.state.UnreachableStrategy
+import mesosphere.marathon.state.{ UnreachableStrategy, UnreachableEnabled }
 import play.api.libs.json._
 
 import scala.concurrent.duration._
@@ -10,12 +10,12 @@ import scala.concurrent.duration._
 class InstanceFormatTest extends UnitTest {
 
   import Instance._
+  import api.v2.json.Formats.UnreachableStrategyFormat
 
   "Instance.unreachableStrategyFormat" should {
     "parse a proper JSON" in {
       val json = Json.parse("""{ "inactiveAfter": 1, "expungeAfter": 2 }""")
-      json.as[UnreachableStrategy].inactiveAfter should be(1.second)
-      json.as[UnreachableStrategy].expungeAfter should be(2.seconds)
+      json.as[UnreachableStrategy] shouldBe (UnreachableEnabled(inactiveAfter = 1.second, expungeAfter = 2.seconds))
     }
 
     "not parse a JSON with empty fields" in {
@@ -36,8 +36,7 @@ class InstanceFormatTest extends UnitTest {
           |}""".stripMargin)
       val instance = json.as[Instance]
 
-      instance.unreachableStrategy.inactiveAfter should be(UnreachableStrategy.DefaultEphemeralInactiveAfter)
-      instance.unreachableStrategy.expungeAfter should be(UnreachableStrategy.DefaultEphemeralExpungeAfter)
+      instance.unreachableStrategy shouldBe (UnreachableStrategy.default(resident = false))
     }
   }
 }

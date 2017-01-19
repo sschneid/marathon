@@ -7,7 +7,7 @@ import com.fasterxml.uuid.{ EthernetAddress, Generators }
 import mesosphere.marathon.core.condition.Condition
 import mesosphere.marathon.core.instance.Instance.{ AgentInfo, InstanceState }
 import mesosphere.marathon.core.task.Task
-import mesosphere.marathon.state.{ MarathonState, PathId, Timestamp, UnreachableStrategy }
+import mesosphere.marathon.state.{ MarathonState, PathId, Timestamp, UnreachableStrategy, UnreachableDisabled, UnreachableEnabled }
 import mesosphere.marathon.stream.Implicits._
 import mesosphere.mesos.Placed
 import org.apache._
@@ -26,7 +26,7 @@ case class Instance(
     state: InstanceState,
     tasksMap: Map[Task.Id, Task],
     runSpecVersion: Timestamp,
-    unreachableStrategy: UnreachableStrategy = UnreachableStrategy.defaultEphemeral) extends MarathonState[Protos.Json, Instance] with Placed {
+    unreachableStrategy: UnreachableStrategy = UnreachableStrategy.default()) extends MarathonState[Protos.Json, Instance] with Placed {
 
   val runSpecId: PathId = instanceId.runSpecId
   val isLaunched: Boolean = state.condition.isActive
@@ -133,12 +133,12 @@ object Instance {
       maybeOldState: Option[InstanceState],
       newTaskMap: Map[Task.Id, Task],
       now: Timestamp,
-      unreachableInactiveAfter: FiniteDuration = 5.minutes): InstanceState = {
+      unreachableStrategy: UnreachableStrategy = UnreachableStrategy.default()): InstanceState = {
 
       val tasks = newTaskMap.values
 
       // compute the new instance condition
-      val condition = conditionFromTasks(tasks, now, unreachableInactiveAfter)
+      val condition = conditionFromTasks(tasks, now, unreachableStrategy)
 
       val active: Option[Timestamp] = activeSince(tasks)
 
@@ -152,14 +152,16 @@ object Instance {
     /**
       * @return condition for instance with tasks.
       */
-    def conditionFromTasks(tasks: Iterable[Task], now: Timestamp, unreachableInactiveAfter: FiniteDuration): Condition = {
+    def conditionFromTasks(tasks: Iterable[Task], now: Timestamp, unreachableStrategy: UnreachableStrategy): Condition = {
       if (tasks.isEmpty) {
         Condition.Unknown
       } else {
         // The smallest Condition according to conditionOrdering is the condition for the whole instance.
         tasks.view.map(_.status.condition).minBy(conditionHierarchy) match {
-          case Condition.Unreachable if shouldBecomeInactive(tasks, now, unreachableInactiveAfter) => Condition.UnreachableInactive
-          case condition => condition
+          case Condition.Unreachable if shouldBecomeInactive(tasks, now, unreachableStrategy) =>
+            Condition.UnreachableInactive
+          case condition =>
+            condition
         }
       }
     }
@@ -177,9 +179,13 @@ object Instance {
     /**
       * @return if one of tasks has been UnreachableInactive for more than unreachableInactiveAfter.
       */
-    def shouldBecomeInactive(tasks: Iterable[Task], now: Timestamp, unreachableInactiveAfter: FiniteDuration): Boolean = {
-      tasks.exists(_.isUnreachableExpired(now, unreachableInactiveAfter))
-    }
+    def shouldBecomeInactive(tasks: Iterable[Task], now: Timestamp, unreachableStrategy: UnreachableStrategy): Boolean =
+      unreachableStrategy match {
+        case _: UnreachableDisabled => false
+        case unreachableEnabled: UnreachableEnabled =>
+          val inactiveAfter = unreachableEnabled.inactiveAfter
+          tasks.exists(_.isUnreachableExpired(now, inactiveAfter))
+      }
   }
 
   private[this] def isRunningUnhealthy(task: Task): Boolean = {
@@ -313,12 +319,11 @@ object Instance {
     }
   }
 
-  implicit val unreachableStrategyFormat: Format[UnreachableStrategy] = Json.format[UnreachableStrategy]
-
   implicit val agentFormat: Format[AgentInfo] = Json.format[AgentInfo]
   implicit val idFormat: Format[Instance.Id] = Json.format[Instance.Id]
   implicit val instanceConditionFormat: Format[Condition] = Json.format[Condition]
   implicit val instanceStateFormat: Format[InstanceState] = Json.format[InstanceState]
+  import api.v2.json.Formats.UnreachableStrategyFormat
 
   implicit val instanceJsonWrites: Writes[Instance] = Json.writes[Instance]
   implicit val unreachableStrategyReads: Reads[Instance] = {
@@ -330,7 +335,7 @@ object Instance {
       (__ \ "state").read[InstanceState] ~
       (__ \ "unreachableStrategy").readNullable[UnreachableStrategy]
     ) { (instanceId, agentInfo, tasksMap, runSpecVersion, state, maybeUnreachableStrategy) =>
-        val unreachableStrategy = maybeUnreachableStrategy.getOrElse(UnreachableStrategy.defaultEphemeral)
+        val unreachableStrategy = maybeUnreachableStrategy.getOrElse(UnreachableStrategy.default())
         new Instance(instanceId, agentInfo, state, tasksMap, runSpecVersion, unreachableStrategy)
       }
   }
@@ -370,10 +375,10 @@ class LegacyAppInstance(
   runSpecVersion: Timestamp) extends Instance(instanceId, agentInfo, state, tasksMap, runSpecVersion)
 
 object LegacyAppInstance {
-  def apply(task: Task, agentInfo: AgentInfo, unreachableStrategy: UnreachableStrategy = UnreachableStrategy.defaultEphemeral): Instance = {
+  def apply(task: Task, agentInfo: AgentInfo, unreachableStrategy: UnreachableStrategy = UnreachableStrategy.default()): Instance = {
     val since = task.status.startedAt.getOrElse(task.status.stagedAt)
     val tasksMap = Map(task.taskId -> task)
-    val state = Instance.InstanceState(None, tasksMap, since)
+    val state = Instance.InstanceState(None, tasksMap, since, unreachableStrategy)
 
     new Instance(task.taskId.instanceId, agentInfo, state, tasksMap, task.runSpecVersion, unreachableStrategy)
   }
