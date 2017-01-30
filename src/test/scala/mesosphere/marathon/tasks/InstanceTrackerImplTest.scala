@@ -2,20 +2,20 @@ package mesosphere.marathon
 package tasks
 
 import com.codahale.metrics.MetricRegistry
-import mesosphere.AkkaFunTest
+import mesosphere.{ AkkaFixtureSupport, FunTest }
 import mesosphere.marathon.core.base.ConstantClock
 import mesosphere.marathon.core.instance.update.InstanceUpdateOperation
 import mesosphere.marathon.core.instance.{ Instance, TestInstanceBuilder }
 import mesosphere.marathon.core.leadership.AlwaysElectedLeadershipModule
 import mesosphere.marathon.core.storage.store.impl.memory.InMemoryPersistenceStore
 import mesosphere.marathon.core.task.Task
-import mesosphere.marathon.core.task.tracker.{ InstanceTracker, TaskStateOpProcessor }
+import mesosphere.marathon.core.task.tracker.InstanceTracker
 import mesosphere.marathon.metrics.Metrics
 import mesosphere.marathon.state.PathId
 import mesosphere.marathon.state.PathId.StringPathId
 import mesosphere.marathon.storage.repository.InstanceRepository
 import mesosphere.marathon.stream.Sink
-import mesosphere.marathon.test.{ MarathonShutdownHookSupport, MarathonTestHelper }
+import mesosphere.marathon.test.MarathonTestHelper
 import mesosphere.mesos.protos.Implicits._
 import mesosphere.mesos.protos.TextAttribute
 import org.apache.mesos.Protos
@@ -24,24 +24,32 @@ import org.mockito.Mockito.spy
 
 import scala.collection.immutable.Seq
 
-class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSupport {
+class InstanceTrackerImplTest extends FunTest with AkkaFixtureSupport {
 
   val TEST_APP_NAME = PathId("/foo")
-  var instanceTracker: InstanceTracker = _
-  var stateOpProcessor: TaskStateOpProcessor = _
   val config = MarathonTestHelper.defaultConfig()
   implicit val metrics = new Metrics(new MetricRegistry)
   val clock = ConstantClock()
-  var state: InstanceRepository = _
 
-  before {
-    state = spy(InstanceRepository.inMemRepository(new InMemoryPersistenceStore()))
-    val taskTrackerModule = MarathonTestHelper.createTaskTrackerModule(AlwaysElectedLeadershipModule(shutdownHooks), Some(state), metrics)
-    instanceTracker = taskTrackerModule.instanceTracker
-    stateOpProcessor = taskTrackerModule.stateOpProcessor
+  trait Fixtures extends AkkaFixtures {
+    implicit val ec = system.dispatcher
+    val state: InstanceRepository = spy(InstanceRepository.inMemRepository(new InMemoryPersistenceStore()))
+    val taskTrackerModule = MarathonTestHelper.createTaskTrackerModule(AlwaysElectedLeadershipModule.forActorSystem(system), Some(state), metrics)
+    val instanceTracker = taskTrackerModule.instanceTracker
+    val stateOpProcessor = taskTrackerModule.stateOpProcessor
+
+    def stateShouldNotContainKey(state: InstanceRepository, key: Instance.Id): Unit = {
+      assert(!state.ids().runWith(Sink.set).futureValue.contains(key), s"Key $key was found in state")
+    }
+
+    def stateShouldContainKey(state: InstanceRepository, key: Instance.Id): Unit = {
+      assert(state.ids().runWith(Sink.set).futureValue.contains(key), s"Key $key was not found in state")
+    }
   }
 
   test("SerializeAndDeserialize") {
+    val f = new Fixtures {}
+    import f._
     val sampleTask = makeSampleInstance(TEST_APP_NAME)
     val originalInstance: Instance = sampleTask
 
@@ -54,86 +62,106 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
   }
 
   test("List") {
+    val f = new TestListFixtures {}
+    import f._
     testList(_.instancesBySpecSync)
   }
 
   test("List Async") {
+    val f = new TestListFixtures {}
+    import f._
     testList(_.instancesBySpec().futureValue)
   }
 
-  private[this] def testList(call: InstanceTracker => InstanceTracker.InstancesBySpec): Unit = {
-    val instance1 = makeSampleInstance(TEST_APP_NAME / "a")
-    val instance2 = makeSampleInstance(TEST_APP_NAME / "b")
-    val instance3 = makeSampleInstance(TEST_APP_NAME / "b")
+  trait TestListFixtures extends Fixtures {
+    def testList(call: InstanceTracker => InstanceTracker.InstancesBySpec): Unit = {
+      val instance1 = makeSampleInstance(TEST_APP_NAME / "a")
+      val instance2 = makeSampleInstance(TEST_APP_NAME / "b")
+      val instance3 = makeSampleInstance(TEST_APP_NAME / "b")
 
-    stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(instance1)).futureValue
-    stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(instance2)).futureValue
-    stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(instance3)).futureValue
+      stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(instance1)).futureValue
+      stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(instance2)).futureValue
+      stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(instance3)).futureValue
 
-    val testAppTasks = call(instanceTracker)
+      val testAppTasks = call(instanceTracker)
 
-    testAppTasks.allSpecIdsWithInstances should be(Set(TEST_APP_NAME / "a", TEST_APP_NAME / "b"))
+      testAppTasks.allSpecIdsWithInstances should be(Set(TEST_APP_NAME / "a", TEST_APP_NAME / "b"))
 
-    testAppTasks.instancesMap(TEST_APP_NAME / "a").specId should equal(TEST_APP_NAME / "a")
-    testAppTasks.instancesMap(TEST_APP_NAME / "b").specId should equal(TEST_APP_NAME / "b")
-    testAppTasks.instancesMap(TEST_APP_NAME / "a").instances should have size 1
-    testAppTasks.instancesMap(TEST_APP_NAME / "b").instances should have size 2
-    testAppTasks.instancesMap(TEST_APP_NAME / "a").instanceMap.keySet should equal(Set(instance1.instanceId))
-    testAppTasks.instancesMap(TEST_APP_NAME / "b").instanceMap.keySet should equal(Set(instance2.instanceId, instance3.instanceId))
+      testAppTasks.instancesMap(TEST_APP_NAME / "a").specId should equal(TEST_APP_NAME / "a")
+      testAppTasks.instancesMap(TEST_APP_NAME / "b").specId should equal(TEST_APP_NAME / "b")
+      testAppTasks.instancesMap(TEST_APP_NAME / "a").instances should have size 1
+      testAppTasks.instancesMap(TEST_APP_NAME / "b").instances should have size 2
+      testAppTasks.instancesMap(TEST_APP_NAME / "a").instanceMap.keySet should equal(Set(instance1.instanceId))
+      testAppTasks.instancesMap(TEST_APP_NAME / "b").instanceMap.keySet should equal(Set(instance2.instanceId, instance3.instanceId))
+    }
   }
 
   test("GetTasks") {
+    val f = new GetTasksFixtures {}
+    import f._
     testGetTasks(_.specInstancesSync(TEST_APP_NAME))
   }
 
   test("GetTasks Async") {
+    val f = new GetTasksFixtures {}
+    import f._
     testGetTasks(_.specInstances(TEST_APP_NAME).futureValue)
   }
 
-  private[this] def testGetTasks(call: InstanceTracker => Seq[Instance]): Unit = {
-    val task1 = makeSampleInstance(TEST_APP_NAME)
-    val task2 = makeSampleInstance(TEST_APP_NAME)
-    val task3 = makeSampleInstance(TEST_APP_NAME)
+  trait GetTasksFixtures extends Fixtures {
+    def testGetTasks(call: InstanceTracker => Seq[Instance]): Unit = {
+      val task1 = makeSampleInstance(TEST_APP_NAME)
+      val task2 = makeSampleInstance(TEST_APP_NAME)
+      val task3 = makeSampleInstance(TEST_APP_NAME)
 
-    stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(task1)).futureValue
-    stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(task2)).futureValue
-    stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(task3)).futureValue
+      stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(task1)).futureValue
+      stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(task2)).futureValue
+      stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(task3)).futureValue
 
-    val testAppTasks = call(instanceTracker)
+      val testAppTasks = call(instanceTracker)
 
-    shouldContainTask(testAppTasks, task1)
-    shouldContainTask(testAppTasks, task2)
-    shouldContainTask(testAppTasks, task3)
-    assert(testAppTasks.size == 3)
-  }
+      shouldContainTask(testAppTasks, task1)
+      shouldContainTask(testAppTasks, task2)
+      shouldContainTask(testAppTasks, task3)
+      assert(testAppTasks.size == 3)
+    }
 
-  private[this] def testCount(count: (InstanceTracker, PathId) => Int): Unit = {
-    val task1 = makeSampleInstance(TEST_APP_NAME / "a")
+    def testCount(count: (InstanceTracker, PathId) => Int): Unit = {
+      val task1 = makeSampleInstance(TEST_APP_NAME / "a")
 
-    stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(task1)).futureValue
+      stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(task1)).futureValue
 
-    count(instanceTracker, TEST_APP_NAME / "a") should be(1)
-    count(instanceTracker, TEST_APP_NAME / "b") should be(0)
+      count(instanceTracker, TEST_APP_NAME / "a") should be(1)
+      count(instanceTracker, TEST_APP_NAME / "b") should be(0)
+    }
   }
 
   test("Contains") {
+    val f = new TestContainsFixtures {}
+    import f._
     testContains(_.hasSpecInstancesSync(_))
   }
 
   test("Contains Async") {
+    val f = new TestContainsFixtures {}
+    import f._
     testContains(_.hasSpecInstances(_).futureValue)
   }
 
-  private[this] def testContains(count: (InstanceTracker, PathId) => Boolean): Unit = {
-    val task1 = makeSampleInstance(TEST_APP_NAME / "a")
+  trait TestContainsFixtures extends Fixtures {
+    def testContains(count: (InstanceTracker, PathId) => Boolean): Unit = {
+      val task1 = makeSampleInstance(TEST_APP_NAME / "a")
 
-    stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(task1)).futureValue
+      stateOpProcessor.process(InstanceUpdateOperation.LaunchEphemeral(task1)).futureValue
 
-    count(instanceTracker, TEST_APP_NAME / "a") should be(true)
-    count(instanceTracker, TEST_APP_NAME / "b") should be(false)
+      count(instanceTracker, TEST_APP_NAME / "a") should be(true)
+      count(instanceTracker, TEST_APP_NAME / "b") should be(false)
+    }
   }
 
   test("TaskLifecycle") {
+    val f = new Fixtures {}
+    import f._
     val sampleInstance = TestInstanceBuilder.newBuilder(TEST_APP_NAME).addTaskStarting().getInstance()
 
     // CREATE TASK
@@ -189,6 +217,8 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
   test("TASK_ERROR status update will expunge task") { testStatusUpdateForTerminalState(TaskState.TASK_ERROR) }
 
   private[this] def testStatusUpdateForTerminalState(taskState: TaskState): Unit = {
+    val f = new Fixtures {}
+    import f._
     val sampleTask = makeSampleInstance(TEST_APP_NAME)
     val terminalStatusUpdate = InstanceUpdateOperation.MesosUpdate(sampleTask, makeTaskStatus(sampleTask, taskState), clock.now())
 
@@ -203,6 +233,8 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
   }
 
   test("UnknownTasks") {
+    val f = new Fixtures {}
+    import f._
     val sampleTask = makeSampleInstance(TEST_APP_NAME)
 
     // don't call taskTracker.created, but directly running
@@ -215,6 +247,8 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
   }
 
   test("MultipleApps") {
+    val f = new Fixtures {}
+    import f._
     val appName1 = "app1".toRootPath
     val appName2 = "app2".toRootPath
     val appName3 = "app3".toRootPath
@@ -266,6 +300,8 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
   }
 
   test("Should not store if state did not change (no health present)") {
+    val f = new Fixtures {}
+    import f._
     val sampleInstance = makeSampleInstance(TEST_APP_NAME)
     val (_, task) = sampleInstance.tasksMap.head
     val status = task.status.mesosStatus.get
@@ -287,6 +323,8 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
   }
 
   test("Should not store if state and health did not change") {
+    val f = new Fixtures {}
+    import f._
     val sampleInstance = TestInstanceBuilder.newBuilder(TEST_APP_NAME).addTaskWithBuilder().taskRunning().asHealthyTask().build().getInstance()
     val (_, task) = sampleInstance.tasksMap.head
     val status = task.status.mesosStatus.get
@@ -308,6 +346,8 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
   }
 
   test("Should store if state changed") {
+    val f = new Fixtures {}
+    import f._
     val sampleInstance = TestInstanceBuilder.newBuilder(TEST_APP_NAME).addTaskStaged().getInstance()
     val (_, task) = sampleInstance.tasksMap.head
     val status = task.status.mesosStatus.get.toBuilder
@@ -333,6 +373,8 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
   }
 
   test("Should store if health changed") {
+    val f = new Fixtures {}
+    import f._
     val sampleInstance = TestInstanceBuilder.newBuilder(TEST_APP_NAME).addTaskRunning().getInstance()
     val (_, task) = sampleInstance.tasksMap.head
     val status = task.status.mesosStatus.get.toBuilder
@@ -358,6 +400,8 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
   }
 
   test("Should store if state and health changed") {
+    val f = new Fixtures {}
+    import f._
     val sampleInstance = makeSampleInstance(TEST_APP_NAME)
     val status = Protos.TaskStatus
       .newBuilder
@@ -386,6 +430,8 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
   }
 
   test("Should store if health changed (no health present at first)") {
+    val f = new Fixtures {}
+    import f._
     val sampleInstance = makeSampleInstance(TEST_APP_NAME)
     val status = Protos.TaskStatus
       .newBuilder
@@ -412,6 +458,8 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
   }
 
   test("Should store if state and health changed (no health present at first)") {
+    val f = new Fixtures {}
+    import f._
     val sampleInstance = makeSampleInstance(TEST_APP_NAME)
     val status = Protos.TaskStatus
       .newBuilder
@@ -469,13 +517,5 @@ class InstanceTrackerImplTest extends AkkaFunTest with MarathonShutdownHookSuppo
     assert(
       task.tasksMap.values.map(_.status.mesosStatus.get).forall(status => status == stateOp.mesosStatus),
       s"Should have task status ${stateOp.mesosStatus}")
-  }
-
-  def stateShouldNotContainKey(state: InstanceRepository, key: Instance.Id): Unit = {
-    assert(!state.ids().runWith(Sink.set).futureValue.contains(key), s"Key $key was found in state")
-  }
-
-  def stateShouldContainKey(state: InstanceRepository, key: Instance.Id): Unit = {
-    assert(state.ids().runWith(Sink.set).futureValue.contains(key), s"Key $key was not found in state")
   }
 }

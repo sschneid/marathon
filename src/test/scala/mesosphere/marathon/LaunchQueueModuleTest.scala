@@ -1,4 +1,5 @@
-package mesosphere.marathon
+package mesosphere
+package marathon
 
 import mesosphere.AkkaUnitTest
 import mesosphere.marathon.core.base.Clock
@@ -16,13 +17,13 @@ import mesosphere.marathon.core.task.bus.{ TaskBusModule, TaskStatusUpdateTestHe
 import mesosphere.marathon.core.task.tracker.InstanceTracker
 import mesosphere.marathon.integration.setup.WaitTestSupport
 import mesosphere.marathon.state.PathId
-import mesosphere.marathon.test.{ MarathonShutdownHookSupport, MarathonTestHelper }
+import mesosphere.marathon.test.MarathonTestHelper
 import org.mockito.Matchers
 
 import scala.concurrent.duration._
 import scala.concurrent.{ ExecutionContext, Future }
 
-class LaunchQueueModuleTest extends AkkaUnitTest with MarathonShutdownHookSupport with OfferMatcherSpec {
+class LaunchQueueModuleTest extends AkkaUnitTest with OfferMatcherSpec {
 
   "LaunchQueueModule" should {
     "empty queue returns no results" in {
@@ -243,7 +244,7 @@ class LaunchQueueModuleTest extends AkkaUnitTest with MarathonShutdownHookSuppor
     }
   }
 
-  class Fixture {
+  class Fixture extends AkkaFixtures {
     val app = MarathonTestHelper.makeBasicApp().copy(id = PathId("/app"))
 
     val offer = MarathonTestHelper.makeBasicOffer().build()
@@ -269,7 +270,7 @@ class LaunchQueueModuleTest extends AkkaUnitTest with MarathonShutdownHookSuppor
     lazy val config = MarathonTestHelper.defaultConfig()
     lazy val module: LaunchQueueModule = new LaunchQueueModule(
       config,
-      AlwaysElectedLeadershipModule(shutdownHooks),
+      AlwaysElectedLeadershipModule.forActorSystem(system),
       clock,
       subOfferMatcherManager = offerMatcherManager,
       maybeOfferReviver = None,

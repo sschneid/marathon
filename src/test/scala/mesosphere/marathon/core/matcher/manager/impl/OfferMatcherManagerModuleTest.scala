@@ -2,6 +2,7 @@ package mesosphere.marathon
 package core.matcher.manager.impl
 
 import com.codahale.metrics.MetricRegistry
+import mesosphere.{ AkkaFixtureSupport, FunTest }
 import mesosphere.marathon.core.base.Clock
 import mesosphere.marathon.core.instance.{ Instance, TestInstanceBuilder }
 import mesosphere.marathon.core.instance.TestInstanceBuilder._
@@ -17,17 +18,14 @@ import mesosphere.marathon.metrics.Metrics
 import mesosphere.marathon.state.{ PathId, Timestamp }
 import mesosphere.marathon.stream._
 import mesosphere.marathon.tasks.ResourceUtil
-import mesosphere.marathon.test.{ MarathonShutdownHookSupport, MarathonTestHelper }
+import mesosphere.marathon.test.MarathonTestHelper
 import org.apache.mesos.Protos.{ Offer, TaskInfo }
-import org.scalatest.{ BeforeAndAfter, FunSuite, Matchers }
 
-import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 import scala.concurrent.{ Await, Future }
 import scala.util.Random
 
-class OfferMatcherManagerModuleTest extends FunSuite
-    with BeforeAndAfter with MarathonShutdownHookSupport with Matchers with OfferMatcherSpec {
+class OfferMatcherManagerModuleTest extends FunTest with OfferMatcherSpec with AkkaFixtureSupport {
 
   // FIXME: Missing Tests
   // Adding matcher while matching offers
@@ -35,7 +33,21 @@ class OfferMatcherManagerModuleTest extends FunSuite
   // Timeout for matching
   // Deal with randomness?
 
+  trait Fixtures extends AkkaFixtures {
+
+    implicit val ctx = system.dispatcher
+    val clock = Clock()
+    val random = Random
+    val leadershipModule = AlwaysElectedLeadershipModule.forActorSystem(system)
+    val config = new OfferMatcherManagerConfig {
+      verify()
+    }
+    val module = new OfferMatcherManagerModule(clock, random, new Metrics(new MetricRegistry), config, leadershipModule)
+  }
+
   test("no registered matchers result in empty result") {
+    val f = new Fixtures {}
+    import f._
     val offer: Offer = MarathonTestHelper.makeBasicOffer().build()
     val matchedTasksFuture: Future[MatchedInstanceOps] =
       module.globalOfferMatcher.matchOffer(clock.now() + 1.second, offer)
@@ -44,6 +56,8 @@ class OfferMatcherManagerModuleTest extends FunSuite
   }
 
   test("single offer is passed to matcher") {
+    val f = new Fixtures {}
+    import f._
     val offer: Offer = MarathonTestHelper.makeBasicOffer(cpus = 1.0).build()
 
     val task = makeOneCPUTask(Task.Id.forInstanceId(F.instanceId, None))
@@ -59,6 +73,8 @@ class OfferMatcherManagerModuleTest extends FunSuite
   }
 
   test("deregistering only matcher works") {
+    val f = new Fixtures {}
+    import f._
     val offer: Offer = MarathonTestHelper.makeBasicOffer(cpus = 1.0).build()
 
     val task = makeOneCPUTask(Task.Id.forInstanceId(F.instanceId, None))
@@ -74,6 +90,8 @@ class OfferMatcherManagerModuleTest extends FunSuite
   }
 
   test("single offer is passed to multiple matchers") {
+    val f = new Fixtures {}
+    import f._
     val offer: Offer = MarathonTestHelper.makeBasicOffer(cpus = 2.0).build()
 
     module.subOfferMatcherManager.setLaunchTokens(10)
@@ -94,6 +112,8 @@ class OfferMatcherManagerModuleTest extends FunSuite
 
   for (launchTokens <- Seq(0, 1, 5)) {
     test(s"launch as many tasks as there are launch tokens: $launchTokens") {
+      val f = new Fixtures {}
+      import f._
       val offer: Offer = MarathonTestHelper.makeBasicOffer(cpus = 1.3).build()
 
       module.subOfferMatcherManager.setLaunchTokens(launchTokens)
@@ -109,6 +129,8 @@ class OfferMatcherManagerModuleTest extends FunSuite
   }
 
   test("single offer is passed to multiple matchers repeatedly") {
+    val f = new Fixtures {}
+    import f._
     val offer: Offer = MarathonTestHelper.makeBasicOffer(cpus = 4.0).build()
 
     module.subOfferMatcherManager.setLaunchTokens(10)
@@ -146,19 +168,6 @@ class OfferMatcherManagerModuleTest extends FunSuite
     val launch = new InstanceOpFactoryHelper(
       Some("principal"),
       Some("role")).launchEphemeral(_: Mesos.TaskInfo, _: Task.LaunchedEphemeral, _: Instance)
-  }
-
-  private[this] var module: OfferMatcherManagerModule = _
-  private[this] var clock: Clock = _
-
-  before {
-    clock = Clock()
-    val random = Random
-    val actorSystem = AlwaysElectedLeadershipModule(shutdownHooks)
-    val config = new OfferMatcherManagerConfig {
-      verify()
-    }
-    module = new OfferMatcherManagerModule(clock, random, new Metrics(new MetricRegistry), config, actorSystem)
   }
 
   /**

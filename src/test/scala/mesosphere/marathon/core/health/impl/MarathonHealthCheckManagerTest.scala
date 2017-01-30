@@ -5,20 +5,19 @@ import akka.event.EventStream
 import akka.testkit.EventFilter
 import com.codahale.metrics.MetricRegistry
 import com.typesafe.config.{ Config, ConfigFactory }
-import mesosphere.AkkaFunTest
+import mesosphere.{ AkkaFixtureSupport, FunTest }
 import mesosphere.marathon.core.base.ConstantClock
 import mesosphere.marathon.core.group.GroupManager
 import mesosphere.marathon.core.health.{ Health, HealthCheck, MesosCommandHealthCheck }
 import mesosphere.marathon.core.instance.update.InstanceUpdateOperation
 import mesosphere.marathon.core.instance.{ Instance, TestInstanceBuilder, TestTaskBuilder }
-import mesosphere.marathon.core.leadership.{ AlwaysElectedLeadershipModule, LeadershipModule }
+import mesosphere.marathon.core.leadership.AlwaysElectedLeadershipModule
 import mesosphere.marathon.core.task.Task
 import mesosphere.marathon.core.task.termination.KillService
-import mesosphere.marathon.core.task.tracker.{ InstanceCreationHandler, InstanceTracker, TaskStateOpProcessor }
 import mesosphere.marathon.metrics.Metrics
 import mesosphere.marathon.state.PathId.StringPathId
 import mesosphere.marathon.state._
-import mesosphere.marathon.test.{ CaptureEvents, MarathonShutdownHookSupport, MarathonTestHelper }
+import mesosphere.marathon.test.{ CaptureEvents, MarathonTestHelper }
 import org.apache.mesos.{ Protos => mesos }
 import org.scalatest.time.{ Millis, Span }
 
@@ -26,71 +25,63 @@ import scala.collection.immutable.Set
 import scala.concurrent.Future
 import scala.concurrent.duration._
 
-class MarathonHealthCheckManagerTest extends AkkaFunTest with MarathonShutdownHookSupport {
-
-  override protected lazy val akkaConfig: Config = ConfigFactory.parseString(
-    """akka.loggers = ["akka.testkit.TestEventListener"]"""
-  )
-  private var hcManager: MarathonHealthCheckManager = _
-  private var taskTracker: InstanceTracker = _
-  private var taskCreationHandler: InstanceCreationHandler = _
-  private var stateOpProcessor: TaskStateOpProcessor = _
-  private var groupManager: GroupManager = _
-  private var eventStream: EventStream = _
-
-  private var leadershipModule: LeadershipModule = _
+class MarathonHealthCheckManagerTest extends FunTest with AkkaFixtureSupport {
 
   private val appId = "test".toRootPath
   private val clock = ConstantClock()
 
-  before {
+  trait Fixtures extends AkkaFixtures {
+    override lazy val akkaConfig: Config = ConfigFactory.parseString(
+      """akka.loggers = ["akka.testkit.TestEventListener"]"""
+    )
+
     implicit val metrics = new Metrics(new MetricRegistry)
-    leadershipModule = AlwaysElectedLeadershipModule(shutdownHooks)
-
+    val leadershipModule = AlwaysElectedLeadershipModule.forActorSystem(system)
     val taskTrackerModule = MarathonTestHelper.createTaskTrackerModule(leadershipModule)
-    taskTracker = taskTrackerModule.instanceTracker
-    taskCreationHandler = taskTrackerModule.instanceCreationHandler
-    stateOpProcessor = taskTrackerModule.stateOpProcessor
-
-    groupManager = mock[GroupManager]
-
-    eventStream = new EventStream(system)
-
+    val taskTracker = taskTrackerModule.instanceTracker
+    val taskCreationHandler = taskTrackerModule.instanceCreationHandler
+    val stateOpProcessor = taskTrackerModule.stateOpProcessor
+    val groupManager = mock[GroupManager]
+    val eventStream = new EventStream(system)
     val killService = mock[KillService]
-    hcManager = new MarathonHealthCheckManager(
+    val hcManager = new MarathonHealthCheckManager(
       system,
       killService,
       eventStream,
       taskTracker,
       groupManager
     )
-  }
 
-  def makeRunningTask(appId: PathId, version: Timestamp): (Instance.Id, Task.Id) = {
-    val instance = TestInstanceBuilder.newBuilder(appId, version = version).addTaskStaged().getInstance()
-    val (taskId, _) = instance.tasksMap.head
-    val taskStatus = TestTaskBuilder.Helper.runningTask(taskId).status.mesosStatus.get
-    val update = InstanceUpdateOperation.MesosUpdate(instance, taskStatus, clock.now())
+    def captureEvents = new CaptureEvents(eventStream)
 
-    taskCreationHandler.created(InstanceUpdateOperation.LaunchEphemeral(instance)).futureValue
-    stateOpProcessor.process(update).futureValue
+    def makeRunningTask(appId: PathId, version: Timestamp): (Instance.Id, Task.Id) = {
+      val instance = TestInstanceBuilder.newBuilder(appId, version = version).addTaskStaged().getInstance()
+      val (taskId, _) = instance.tasksMap.head
+      val taskStatus = TestTaskBuilder.Helper.runningTask(taskId).status.mesosStatus.get
+      val update = InstanceUpdateOperation.MesosUpdate(instance, taskStatus, clock.now())
 
-    (instance.instanceId, taskId)
-  }
+      taskCreationHandler.created(InstanceUpdateOperation.LaunchEphemeral(instance)).futureValue
+      stateOpProcessor.process(update).futureValue
 
-  def updateTaskHealth(taskId: Task.Id, version: Timestamp, healthy: Boolean): Unit = {
-    val taskStatus = mesos.TaskStatus.newBuilder
-      .setTaskId(taskId.mesosTaskId)
-      .setState(mesos.TaskState.TASK_RUNNING)
-      .setHealthy(healthy)
-      .build
+      (instance.instanceId, taskId)
+    }
 
-    EventFilter.info(start = "Received health result for app", occurrences = 1).intercept {
-      hcManager.update(taskStatus, version)
+    def updateTaskHealth(taskId: Task.Id, version: Timestamp, healthy: Boolean): Unit = {
+      val taskStatus = mesos.TaskStatus.newBuilder
+        .setTaskId(taskId.mesosTaskId)
+        .setState(mesos.TaskState.TASK_RUNNING)
+        .setHealthy(healthy)
+        .build
+
+      EventFilter.info(start = "Received health result for app", occurrences = 1).intercept {
+        hcManager.update(taskStatus, version)
+      }
     }
   }
 
   test("Add for a known app") {
+    val f = new Fixtures {}
+    import f._
     val app: AppDefinition = AppDefinition(id = appId)
 
     val healthCheck = MesosCommandHealthCheck(gracePeriod = 0.seconds, command = Command("true"))
@@ -99,6 +90,8 @@ class MarathonHealthCheckManagerTest extends AkkaFunTest with MarathonShutdownHo
   }
 
   test("Add for not-yet-known app") {
+    val f = new Fixtures {}
+    import f._
     val app: AppDefinition = AppDefinition(id = appId)
 
     val healthCheck = MesosCommandHealthCheck(gracePeriod = 0.seconds, command = Command("true"))
@@ -107,6 +100,8 @@ class MarathonHealthCheckManagerTest extends AkkaFunTest with MarathonShutdownHo
   }
 
   test("Update") {
+    val f = new Fixtures {}
+    import f._
     val app: AppDefinition = AppDefinition(id = appId, versionInfo = VersionInfo.NoVersion)
 
     val instance = TestInstanceBuilder.newBuilder(appId).addTaskStaged().getInstance()
@@ -146,6 +141,8 @@ class MarathonHealthCheckManagerTest extends AkkaFunTest with MarathonShutdownHo
   }
 
   test("statuses") {
+    val f = new Fixtures {}
+    import f._
     val app: AppDefinition = AppDefinition(id = appId)
     val version = app.version
 
@@ -201,6 +198,8 @@ class MarathonHealthCheckManagerTest extends AkkaFunTest with MarathonShutdownHo
   }
 
   test("reconcile") {
+    val f = new Fixtures {}
+    import f._
     def taskStatus(instance: Instance, state: mesos.TaskState = mesos.TaskState.TASK_RUNNING) =
       mesos.TaskStatus.newBuilder
         .setTaskId(mesos.TaskID.newBuilder()
@@ -298,6 +297,8 @@ class MarathonHealthCheckManagerTest extends AkkaFunTest with MarathonShutdownHo
   }
 
   test("reconcile loads the last known task health state") {
+    val f = new Fixtures {}
+    import f._
     val healthCheck = MesosCommandHealthCheck(command = Command("true"))
     val app: AppDefinition = AppDefinition(id = appId, healthChecks = Set(healthCheck))
 
@@ -322,8 +323,6 @@ class MarathonHealthCheckManagerTest extends AkkaFunTest with MarathonShutdownHo
     assert(health.lastFailure.isDefined)
     assert(health.lastSuccess.isEmpty)
   }
-
-  def captureEvents = new CaptureEvents(eventStream)
 
   override implicit def patienceConfig: PatienceConfig = PatienceConfig(timeout = scaled(Span(1000, Millis)))
 }

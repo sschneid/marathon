@@ -7,7 +7,7 @@ import akka.event.EventStream
 import com.codahale.metrics.MetricRegistry
 import mesosphere.AkkaUnitTest
 import mesosphere.chaos.http.HttpConf
-import mesosphere.marathon.core.base.ShutdownHooks
+import mesosphere.marathon.core.base.ShutdownState
 import mesosphere.marathon.core.election.{ ElectionCandidate, ElectionService, LocalLeadershipEvent }
 import mesosphere.marathon.metrics.Metrics
 import org.mockito.Mockito
@@ -27,7 +27,7 @@ class ElectionServiceBaseTest extends AkkaUnitTest {
     val candidate: ElectionCandidate = mock[ElectionCandidate]
     val metrics: Metrics = new Metrics(new MetricRegistry)
     val backoff: Backoff = new ExponentialBackoff(0.01.seconds, 0.1.seconds)
-    val shutdownHooks: ShutdownHooks = mock[ShutdownHooks]
+    val shutdownState: ShutdownState = ShutdownState.Ignore
   }
 
   "ElectionServiceBase" should {
