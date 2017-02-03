@@ -78,7 +78,7 @@ node('JenkinsMarathonCI-Debian8') {
         }
         stageWithCommitStatus("3. Test Integration") {
           try {
-              timeout(time: 20, unit: 'MINUTES') {
+              timeout(time: 45, unit: 'MINUTES') {
                 withEnv(['RUN_DOCKER_INTEGRATION_TESTS=true', 'RUN_MESOS_INTEGRATION_TESTS=true']) {
                    sh "sudo -E sbt -Dsbt.log.format=false coverage integration:test mesos-simulation/integration:test coverageReport"
                 }
