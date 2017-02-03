@@ -156,7 +156,7 @@ lazy val commonSettings = inConfig(SerialIntegrationTest)(Defaults.testTasks) ++
       "-l", "mesosphere.marathon.SerialIntegrationTest",
       "-l", "mesosphere.marathon.UnstableTest",
       "-y", "org.scalatest.WordSpec")),
-  parallelExecution in IntegrationTest := true,
+  parallelExecution in IntegrationTest := false,
   testForkedParallel in IntegrationTest := true,
   concurrentRestrictions in IntegrationTest := Seq(Tags.limitAll(java.lang.Runtime.getRuntime.availableProcessors() / 2)),
   test in IntegrationTest := {
