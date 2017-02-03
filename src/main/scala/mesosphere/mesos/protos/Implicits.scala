@@ -1,7 +1,7 @@
 package mesosphere.mesos.protos
 
 import com.google.protobuf.ByteString
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.all._
 import org.apache.mesos.Protos
 
 import scala.language.implicitConversions

@@ -2,7 +2,7 @@ package mesosphere.marathon
 package api.serialization
 
 import mesosphere.marathon.state.PortDefinition
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.all._
 import org.apache.mesos
 
 object PortDefinitionSerializer {

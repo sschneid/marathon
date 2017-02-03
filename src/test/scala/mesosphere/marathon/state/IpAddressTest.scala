@@ -3,7 +3,7 @@ package state
 
 import mesosphere.UnitTest
 import mesosphere.marathon.api.JsonTestHelper
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.all._
 import org.apache.mesos.{ Protos => MesosProtos }
 import play.api.libs.json.Json
 

@@ -4,7 +4,7 @@ package api.serialization
 import mesosphere.marathon.core.externalvolume.ExternalVolumes
 import mesosphere.marathon.state.Container.PortMapping
 import mesosphere.marathon.state._
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.all._
 import org.apache.mesos
 
 object ContainerSerializer {

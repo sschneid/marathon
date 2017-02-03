@@ -12,6 +12,8 @@ import scala.collection.immutable.Seq
 import scala.compat.java8.OptionConverters._
 import scala.compat.java8.StreamConverters
 
+import StreamConversions._
+
 /**
   * Enriches a Java Stream to appear as if its a scala collection that can be traversed once.
   */
