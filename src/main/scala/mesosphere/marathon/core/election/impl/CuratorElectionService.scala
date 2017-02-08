@@ -13,12 +13,13 @@ import mesosphere.marathon.core.base._
 import mesosphere.marathon.metrics.Metrics
 import org.apache.curator.framework.api.ACLProvider
 import org.apache.curator.framework.recipes.leader.{ LeaderLatch, LeaderLatchListener }
+import org.apache.curator.framework.state.{ ConnectionState, ConnectionStateListener }
 import org.apache.curator.framework.{ AuthInfo, CuratorFramework, CuratorFrameworkFactory }
 import org.apache.curator.{ RetryPolicy, RetrySleeper }
 import org.apache.zookeeper.ZooDefs
 import org.apache.zookeeper.data.ACL
-import scala.concurrent.Future
 
+import scala.concurrent.Future
 import scala.util.control.NonFatal
 import scala.concurrent.ExecutionContext
 
@@ -45,8 +46,8 @@ class CuratorElectionService(
   private var maybeLatch: Option[LeaderLatch] = None
 
   system.registerOnTermination {
-    logger.debug("Abdicating on shutdown.")
-    abdicateLeadership()
+    logger.info("Stopping leadership on shutdown.")
+    stopLeadership()
     client.close()
   }
 
@@ -72,7 +73,7 @@ class CuratorElectionService(
 
     try {
       val latch = new LeaderLatch(client, config.zooKeeperLeaderPath + "-curator", hostPort, LeaderLatch.CloseMode.NOTIFY_LEADER)
-      latch.addListener(Listener, callbackExecutor)
+      latch.addListener(LeaderChangeListener, callbackExecutor)
       latch.start()
       maybeLatch = Some(latch)
     } catch {
@@ -87,7 +88,7 @@ class CuratorElectionService(
     *
     * We delegate the methods asynchronously so they are processed outside of the synchronized lock for LeaderLatch.setLeadership
     */
-  private object Listener extends LeaderLatchListener {
+  private object LeaderChangeListener extends LeaderLatchListener {
     override def notLeader(): Unit = Future {
       logger.info(s"Leader defeated. New leader: ${leaderHostPort.getOrElse("-")}")
       stopLeadership()
@@ -99,13 +100,28 @@ class CuratorElectionService(
     }
   }
 
+  /**
+    * Listens to connection changes and stops leadership when the connection to ZooKeeper is lost.
+    *
+    * The is the suggested behaviour in the [[http://curator.apache.org/curator-recipes/leader-latch.html LeaderLatch documentation]].
+    *
+    */
+  private object ConnectionLostListener extends ConnectionStateListener {
+    override def stateChanged(client: CuratorFramework, newState: ConnectionState): Unit = {
+      if (!newState.isConnected) {
+        logger.info("Lost connection to ZooKeeper as leader. Will stop leadership.")
+        stopLeadership()
+      }
+    }
+  }
+
   private[this] def onAbdicate(error: Boolean): Unit = synchronized {
     maybeLatch match {
       case None => logger.error(s"Abdicating leadership while not being leader (error: $error)")
-      case Some(l) =>
+      case Some(latch) =>
         maybeLatch = None
         try {
-          l.close()
+          latch.close()
         } catch {
           case NonFatal(e) => logger.error("Could not close leader latch", e)
         }
@@ -158,6 +174,8 @@ class CuratorElectionService(
       case _ =>
         builder.build()
     }
+
+    client.getConnectionStateListenable().addListener(ConnectionLostListener)
 
     client.start()
     client.blockUntilConnected(config.zkTimeoutDuration.toMillis.toInt, TimeUnit.MILLISECONDS)
