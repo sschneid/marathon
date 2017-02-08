@@ -109,8 +109,9 @@ class CuratorElectionService(
   private object ConnectionLostListener extends ConnectionStateListener {
     override def stateChanged(client: CuratorFramework, newState: ConnectionState): Unit = {
       if (!newState.isConnected) {
-        logger.info("Lost connection to ZooKeeper as leader. Will stop leadership.")
+        logger.info("Lost connection to ZooKeeper as leader — Committing suicide")
         stopLeadership()
+        Runtime.getRuntime.asyncExit()(scala.concurrent.ExecutionContext.global)
       }
     }
   }
@@ -159,7 +160,7 @@ class CuratorElectionService(
       }).
       retryPolicy(new RetryPolicy {
         override def allowRetry(retryCount: Int, elapsedTimeMs: Long, sleeper: RetrySleeper): Boolean = {
-          logger.error("ZooKeeper access failed - Committing suicide to avoid invalidating ZooKeeper state")
+          logger.error("ZooKeeper access failed — Committing suicide to avoid invalidating ZooKeeper state")
           Runtime.getRuntime.asyncExit()(scala.concurrent.ExecutionContext.global)
           false
         }
