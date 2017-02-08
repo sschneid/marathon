@@ -46,11 +46,18 @@ private[marathon] class InstanceUpdateOpResolver(
         createInstance(op.instanceId)(updater.reserve(op, clock.now()))
 
       case op: ForceExpunge =>
-        updateExistingInstance(op.instanceId)(updater.forceExpunge(_, clock.now()))
+        updateExistingInstance(op.instanceId)(
+          applyOperation = updater.forceExpunge(_, clock.now() ),
+          ifNotExist = InstanceUpdateEffect.Noop(_))
 
       case op: Revert =>
         Future.successful(updater.revert(op.instance))
     }
+  }
+
+  private[this] def failIfNotExist(id: Instance.Id): InstanceUpdateEffect = {
+    InstanceUpdateEffect.Failure(
+      new IllegalStateException(s"$id of app [${id.runSpecId}] does not exist"))
   }
 
   /**
@@ -60,14 +67,15 @@ private[marathon] class InstanceUpdateOpResolver(
     * @param applyOperation the operation that shall be applied to the instance
     * @return The [[InstanceUpdateEffect]] that results from applying the given operation.
     */
-  private[this] def updateExistingInstance(id: Instance.Id)(applyOperation: Instance => InstanceUpdateEffect)(implicit ec: ExecutionContext): Future[InstanceUpdateEffect] = {
+  private[this] def updateExistingInstance(id: Instance.Id)(
+    applyOperation: Instance => InstanceUpdateEffect,
+    ifNotExist: Instance.Id => InstanceUpdateEffect = failIfNotExist(_))(implicit ec: ExecutionContext): Future[InstanceUpdateEffect] = {
     directInstanceTracker.instance(id).map {
       case Some(existingInstance) =>
         applyOperation(existingInstance)
 
       case None =>
-        InstanceUpdateEffect.Failure(
-          new IllegalStateException(s"$id of app [${id.runSpecId}] does not exist"))
+        ifNotExist(id)
     }
   }
 
