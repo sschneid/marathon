@@ -12,6 +12,7 @@ import com.codahale.metrics.MetricRegistry
 import mesosphere.marathon.core.base._
 import mesosphere.marathon.metrics.Metrics
 import org.apache.curator.framework.api.ACLProvider
+import org.apache.curator.framework.imps.CuratorFrameworkState
 import org.apache.curator.framework.recipes.leader.{ LeaderLatch, LeaderLatchListener }
 import org.apache.curator.framework.state.{ ConnectionState, ConnectionStateListener }
 import org.apache.curator.framework.{ AuthInfo, CuratorFramework, CuratorFrameworkFactory }
@@ -52,15 +53,18 @@ class CuratorElectionService(
   }
 
   override def leaderHostPortImpl: Option[String] = synchronized {
-    try {
-      maybeLatch.flatMap { l =>
-        val participant = l.getLeader
-        if (participant.isLeader) Some(participant.getId) else None
+    if (client.getState() == CuratorFrameworkState.STOPPED) None
+    else {
+      try {
+        maybeLatch.flatMap { l =>
+          val participant = l.getLeader
+          if (participant.isLeader) Some(participant.getId) else None
+        }
+      } catch {
+        case NonFatal(e) =>
+          logger.error("Error while getting current leader", e)
+          None
       }
-    } catch {
-      case NonFatal(e) =>
-        logger.error("Error while getting current leader", e)
-        None
     }
   }
 
@@ -68,7 +72,7 @@ class CuratorElectionService(
     logger.info("Using HA and therefore offering leadership")
     maybeLatch.foreach { l =>
       logger.info("Offering leadership while being candidate")
-      l.close()
+      if (client.getState() != CuratorFrameworkState.STOPPED) l.close()
     }
 
     try {
@@ -111,6 +115,7 @@ class CuratorElectionService(
       if (!newState.isConnected) {
         logger.info("Lost connection to ZooKeeper as leader — Committing suicide")
         stopLeadership()
+        client.close()
         Runtime.getRuntime.asyncExit()(scala.concurrent.ExecutionContext.global)
       }
     }
@@ -122,7 +127,7 @@ class CuratorElectionService(
       case Some(latch) =>
         maybeLatch = None
         try {
-          latch.close()
+          if (client.getState() != CuratorFrameworkState.STOPPED) latch.close()
         } catch {
           case NonFatal(e) => logger.error("Could not close leader latch", e)
         }
