@@ -56,8 +56,8 @@ class CuratorElectionService(
     if (client.getState() == CuratorFrameworkState.STOPPED) None
     else {
       try {
-        maybeLatch.flatMap { l =>
-          val participant = l.getLeader
+        maybeLatch.flatMap { latch =>
+          val participant = latch.getLeader
           if (participant.isLeader) Some(participant.getId) else None
         }
       } catch {
@@ -70,9 +70,9 @@ class CuratorElectionService(
 
   override def offerLeadershipImpl(): Unit = synchronized {
     logger.info("Using HA and therefore offering leadership")
-    maybeLatch.foreach { l =>
+    maybeLatch.foreach { latch =>
       logger.info("Offering leadership while being candidate")
-      if (client.getState() != CuratorFrameworkState.STOPPED) l.close()
+      if (client.getState() != CuratorFrameworkState.STOPPED) latch.close()
     }
 
     try {
